@@ -1,4 +1,4 @@
-module encoder_8b10b (
+module 8b10benc (
     input  wire       clk,
     input  wire       rst_n,
 
@@ -20,6 +20,8 @@ module encoder_8b10b (
     reg       disPar_6b_table [0:31];  // c_disPar_6b equivalent
     reg [3:0] enc_3b4b_table [0:7];    // c_enc_3b_4b_table equivalent
     reg       disPar_4b_table [0:7];   // c_disPar_4b equivalent
+    reg [5:0] k_enc_6b [0:0];   // just K28.5's RD- value
+    reg [3:0] k_enc_4b [0:0];
 
     initial begin
 
@@ -114,21 +116,29 @@ initial begin
     disPar_4b_table[6] = 1'b0;
     disPar_4b_table[7] = 1'b1;
 end
+initial begin
+    k_enc_6b[0] = 6'b001111;
+    k_enc_4b[0] = 4'b1010;
+end
 
-    // ---- Step 1: raw lookups (combinational) ----
-    wire [5:0] enc_5b6b      = enc_5b6b_table[data_in[4:0]];
-    wire        disp_5b6b     = disPar_6b_table[data_in[4:0]];
-    wire [5:0] enc_5b6b_alt  = ~enc_5b6b;
 
-    wire [3:0] enc_3b4b      = enc_3b4b_table[data_in[7:5]];
-    wire        disp_3b4b     = disPar_4b_table[data_in[7:5]];
-    wire [3:0] enc_3b4b_alt  = ~enc_3b4b;
+// ---- Step 1: raw lookups (combinational, with K-character override) ----
+wire is_k28_5 = k_in && (data_in == 8'b101_11100);
 
-    // ---- Step 2: sequential disparity decision chain (combinational) ----
-    reg [5:0] chosen_5b6b;
-    reg [3:0] chosen_3b4b;
-    reg       intermediate_rd;
-    reg       final_rd;
+wire [5:0] enc_5b6b      = is_k28_5 ? k_enc_6b[0] : enc_5b6b_table[data_in[4:0]];
+wire        disp_5b6b     = is_k28_5 ? 1'b1        : disPar_6b_table[data_in[4:0]];
+wire [5:0] enc_5b6b_alt  = ~enc_5b6b;
+
+wire [3:0] enc_3b4b      = is_k28_5 ? k_enc_4b[0] : enc_3b4b_table[data_in[7:5]];
+wire        disp_3b4b     = is_k28_5 ? 1'b1        : disPar_4b_table[data_in[7:5]];
+wire [3:0] enc_3b4b_alt  = ~enc_3b4b;
+
+// ---- Step 2: sequential disparity decision chain (combinational) ----
+reg [5:0] chosen_5b6b;
+reg [3:0] chosen_3b4b;
+reg       intermediate_rd;
+reg       final_rd;
+
 
     always @(*) begin
         // Decide 5B/6B first, using current running_disparity
@@ -160,10 +170,11 @@ end
         end
     end
 
-    // TODO: K-character handling — override chosen_5b6b/chosen_3b4b with
-    //       a separate K-character table when k_in is high, and set
-    //       rd_error if k_in is high but data_in isn't a defined K-character
-    //       (also handle the DxP7/alt7 special case for data_in[7:5]==3'b111)
+// NOTE: DxP7/alt7 comma-collision-avoidance logic for D.x.7 data characters
+//       is intentionally not implemented in this project's scope — see report
+//       for justification (comma detection relies solely on K28.5 injection
+//       frequency/placement rather than guaranteeing collision-free D.x.7 encoding).
+
 
     // ---- Step 3: register outputs and update running disparity ----
     always @(posedge clk or negedge rst_n) begin
@@ -171,12 +182,15 @@ end
             running_disparity <= 1'b0;
             data_out           <= 10'b0;
             valid_out          <= 1'b0;
+            rd_error           <= 1'b0; 
         end else if (valid_in) begin
             running_disparity <= final_rd;
             data_out           <= {chosen_5b6b, chosen_3b4b};
             valid_out          <= 1'b1;
+            rd_error           <= k_in && !is_k28_5;
         end else begin
             valid_out <= 1'b0;
+            rd_error  <= 1'b0; 
         end
     end
 
